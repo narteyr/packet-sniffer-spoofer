@@ -20,8 +20,16 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+typedef struct {
+    int family;
+    int socktype;
+    int protocol; // 0 ir IPPROTO_TCP
+    socklen_t addrlen;
+    struct sockaddr_storage addr;
+} SocketAddress;
 
-void resolveHostName(const char * hostname, const void * addr);
+
+void resolve_hostname(const char * hostname, char* ip_address, SocketAddress* result);
 
 int main(int argc, char *argv[]) {
     // if argc is not 2, then throw usage error, break
@@ -31,13 +39,25 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
     const char* hostname = argv[1];
-    const void* addr;
-    resolveHostName(hostname, addr);
+    char ip_address[INET6_ADDRSTRLEN];
+    SocketAddress* resolved_addr;
+    resolve_hostname(hostname, ip_address, resolved_addr);    
+    printf("final ip address: %s\n", ip_address);
+
+    int sock = socket(resolved_addr->family, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) { perror("socket"); return 1;}
+
+
+    struct sockaddr_in addr;
+    addr.sin_family = resolved_addr->family;
+    
+
+
     return 0;
 }
 
 
-void resolveHostName(const char* hostname, const void* addr) {
+void resolve_hostname(const char* hostname, char* ip_address, SocketAddress* result) {
     
     struct addrinfo hints, *res, *p;
     int status;
@@ -51,7 +71,21 @@ void resolveHostName(const char* hostname, const void* addr) {
         fprintf(stderr, "getaddrinfor error: %s\n", gai_strerror(status));
         exit(1);
     }
+
+    if (res == NULL) {
+        fprintf(stderr, "Could not find any address for %s\n", hostname);
+        freeaddrinfo(res);
+        exit(1);
+    }
+
+    result->family = res->ai_family;
+    result->socktype = res->ai_socktype;
+    result->protocol = res->ai_protocol;
+    result->addrlen = res-> ai_addrlen;
+    memcpy(&result->addr, res->ai_addr, res->ai_addrlen);
+
     printf("IP address for %s:\n\n", hostname);
+    void *addr;
     for (p = res; p != NULL; p = p->ai_next){
         if (p->ai_family == AF_INET) {
             struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
@@ -67,6 +101,7 @@ void resolveHostName(const char* hostname, const void* addr) {
 
     //Convert the IP to a string and print it
     inet_ntop(p->ai_family, addr, ipstr, sizeof ipstr);
+    strcpy(ip_address, ipstr);
     printf(" %s: %s\n", ipver, ipstr);
     freeaddrinfo(res);
 }
