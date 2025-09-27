@@ -1,12 +1,12 @@
 /*
 *
-* Purpose: The 'ping.c' is used for making an echo 
+* Purpose: The 'ping.c' is used for making an echo
 * request and recieving response from target address
-* The functionalities are designed for the ping 
+* The functionalities are designed for the ping
 * tool command
 * @author Richmond Kwalah Nartey Tettey, Dartmouth CS60 Fall 2025
 * date: 09.27.2025
-* 
+*
 * Usage: ./ping [<ipv4 address> | <domain name> ]
 */
 
@@ -20,88 +20,97 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+// This struct is a great idea to keep socket info organized.
 typedef struct {
     int family;
     int socktype;
-    int protocol; // 0 ir IPPROTO_TCP
+    int protocol;
     socklen_t addrlen;
-    struct sockaddr_storage addr;
+    struct sockaddr_storage addr; // sockaddr_storage can hold both IPv4 and IPv6
 } SocketAddress;
 
 
-void resolve_hostname(const char * hostname, char* ip_address, SocketAddress* result);
+void resolve_hostname(const char *hostname, char *ip_address, SocketAddress *result);
 
 int main(int argc, char *argv[]) {
-    // if argc is not 2, then throw usage error, break
-    //We expect two arguments: The program name: argv[0] and one input
+    // We expect two arguments: The program name and one input. This is correct.
     if (argc != 2) {
         fprintf(stderr, "usage: %s [<ipv4 address> | <domain name> ]\n", argv[0]);
         return EXIT_FAILURE;
     }
-    const char* hostname = argv[1];
+    const char *hostname = argv[1];
     char ip_address[INET6_ADDRSTRLEN];
-    SocketAddress* resolved_addr;
-    resolve_hostname(hostname, ip_address, resolved_addr);    
-    printf("final ip address: %s\n", ip_address);
 
-    int sock = socket(resolved_addr->family, SOCK_RAW, IPPROTO_ICMP);
-    if (sock < 0) { perror("socket"); return 1;}
+    SocketAddress resolved_addr;
+
+    resolve_hostname(hostname, ip_address, &resolved_addr);
+
+    printf("Pinging %s [%s]\n", hostname, ip_address);
+
+    int sock = socket(resolved_addr.family, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) {
+        perror("socket");
+        fprintf(stderr, "Error: Creating a raw socket often requires root privileges.\nTry running with 'sudo'.\n");
+        return 1;
+    }
+
+    printf("Socket created successfully. Ready to build and send ICMP packet.\n");
+
+    // --- YOUR NEXT STEPS GO HERE ---
+    // 1. Create an ICMP echo request packet.
+    // 2. Use sendto() to send it to the destination.
+    // 3. Use recvfrom() to wait for the reply.
+    // 4. Calculate the time difference.
+    // 5. Close the socket.
 
 
-    struct sockaddr_in addr;
-    addr.sin_family = resolved_addr->family;
     
-
-
+    close(sock);
     return 0;
 }
 
 
-void resolve_hostname(const char* hostname, char* ip_address, SocketAddress* result) {
-    
+void resolve_hostname(const char *hostname, char *ip_address, SocketAddress *result) {
     struct addrinfo hints, *res, *p;
     int status;
-    const char *ipver;
-    char ipstr[INET6_ADDRSTRLEN];
-    memset(&hints, 0, sizeof(hints)); // set empty struct
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_RAW;
+
     if ((status = getaddrinfo(hostname, NULL, &hints, &res)) != 0) {
-        fprintf(stderr, "getaddrinfor error: %s\n", gai_strerror(status));
+        fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
         exit(1);
     }
 
-    if (res == NULL) {
-        fprintf(stderr, "Could not find any address for %s\n", hostname);
-        freeaddrinfo(res);
-        exit(1);
-    }
-
-    result->family = res->ai_family;
-    result->socktype = res->ai_socktype;
-    result->protocol = res->ai_protocol;
-    result->addrlen = res-> ai_addrlen;
-    memcpy(&result->addr, res->ai_addr, res->ai_addrlen);
-
-    printf("IP address for %s:\n\n", hostname);
+    // Loop through the results and use the first one we can.
+    // This is a robust way to handle it. Your loop logic was fine.
+    // This simplified version just takes the first result.
+    p = res;
     void *addr;
-    for (p = res; p != NULL; p = p->ai_next){
-        if (p->ai_family == AF_INET) {
-            struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
-            addr = &(ipv4->sin_addr);
-            ipver = "IPv4";
-            break;
-        } else { //IPV6
-            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
-            addr = &(ipv6->sin6_addr);
-            ipver = "IPv6";
-        }
-    } 
+    const char *ipver;
 
-    //Convert the IP to a string and print it
-    inet_ntop(p->ai_family, addr, ipstr, sizeof ipstr);
-    strcpy(ip_address, ipstr);
-    printf(" %s: %s\n", ipver, ipstr);
+    if (p->ai_family == AF_INET) { // IPv4
+        struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+        addr = &(ipv4->sin_addr);
+        ipver = "IPv4";
+    } else { // IPv6
+        struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+        addr = &(ipv6->sin6_addr);
+        ipver = "IPv6";
+    }
+
+    // Convert the IP to a string and store it
+    inet_ntop(p->ai_family, addr, ip_address, INET6_ADDRSTRLEN);
+    printf("Resolved to %s (%s)\n", ip_address, ipver);
+
+    // Now that the pointer `result` is valid, we can safely write to it.
+    result->family = p->ai_family;
+    result->socktype = p->ai_socktype;
+    result->protocol = p->ai_protocol;
+    result->addrlen = p->ai_addrlen;
+    memcpy(&result->addr, p->ai_addr, p->ai_addrlen);
+
+    // Always free the linked list returned by getaddrinfo.
     freeaddrinfo(res);
 }
