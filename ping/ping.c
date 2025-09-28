@@ -12,13 +12,18 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/ip_icmp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include <unistd.h>
+
+#define PACKET_SIZE 64
 
 // This struct is a great idea to keep socket info organized.
 typedef struct {
@@ -62,9 +67,20 @@ int main(int argc, char *argv[]) {
     // 3. Use recvfrom() to wait for the reply.
     // 4. Calculate the time difference.
     // 5. Close the socket.
+    int sequence_number = 1;
+    char packet[PACKET_SIZE];
+    //first part of the buffer is the ICMP header
+    struct icmp* icmp_hdr = (struct icmp*) packet;
 
+    //rest of the buffer is for the payload
+    struct timeval* payload = (struct timeval*) (packet + sizeof(struct icmp));
 
-    
+    icmp_hdr->icmp_type = 8;
+    icmp_hdr->icmp_code = 0;
+    icmp_hdr->icmp_id = getpid();
+    icmp_hdr->icmp_seq = sequence_number;
+    icmp_hdr->icmp_cksum = 0;
+    gettimeofday(payload, NULL);
     close(sock);
     return 0;
 }
@@ -113,4 +129,21 @@ void resolve_hostname(const char *hostname, char *ip_address, SocketAddress *res
 
     // Always free the linked list returned by getaddrinfo.
     freeaddrinfo(res);
+}
+
+unsigned short calculate_checksum(void *b, int len) {
+    unsigned short *buf = b;
+    unsigned int sum = 0;
+    unsigned short result;
+
+    for (sum = 0; len > 1; len -= 2) {
+        sum += *buf++;
+    }
+    if (len == 1) {
+        sum += *(unsigned char*)buf;
+    }
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    sum += (sum >> 16);
+    result = ~sum;
+    return result;
 }
