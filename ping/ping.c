@@ -79,7 +79,14 @@ int main(int argc, char *argv[]) {
     icmp_hdr->icmp_code = 0;
     icmp_hdr->icmp_id = getpid();
     icmp_hdr->icmp_seq = sequence_number;
-    icmp_hdr->icmp_cksum = 0;
+    icmp_hdr->icmp_cksum = checksum((unsigned short *)icmp_hdr,
+                                        sizeof(struct icmp) + sizeof(struct timeval);
+                                    );
+    
+    // send packet
+    if (sendto(sock, packet, sizeof(struct icmp) + sizeof(struct timeval), 0,
+                                    (struct sockaddr*)&dest, sizeof(dest)
+))
     gettimeofday(payload, NULL);
     close(sock);
     return 0;
