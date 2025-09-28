@@ -16,6 +16,7 @@
 #include <string.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -34,7 +35,7 @@ typedef struct {
     struct sockaddr_storage addr; // sockaddr_storage can hold both IPv4 and IPv6
 } SocketAddress;
 
-
+unsigned short calculate_checksum(void *b, int len);
 void resolve_hostname(const char *hostname, char *ip_address, SocketAddress *result);
 
 int main(int argc, char *argv[]) {
@@ -52,6 +53,11 @@ int main(int argc, char *argv[]) {
 
     printf("Pinging %s [%s]\n", hostname, ip_address);
 
+    if (resolved_addr.family != AF_INET) {
+        fprintf(stderr, "IPv6 not supported in this version (ICMPv6 differs). Please use an IPv4 host/address.\n");
+        return EXIT_FAILURE;
+    }
+
     int sock = socket(resolved_addr.family, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0) {
         perror("socket");
@@ -61,33 +67,81 @@ int main(int argc, char *argv[]) {
 
     printf("Socket created successfully. Ready to build and send ICMP packet.\n");
 
-    // --- YOUR NEXT STEPS GO HERE ---
-    // 1. Create an ICMP echo request packet.
-    // 2. Use sendto() to send it to the destination.
-    // 3. Use recvfrom() to wait for the reply.
-    // 4. Calculate the time difference.
-    // 5. Close the socket.
-    int sequence_number = 1;
     char packet[PACKET_SIZE];
-    //first part of the buffer is the ICMP header
-    struct icmp* icmp_hdr = (struct icmp*) packet;
+    for (int sequence_number = 1; sequence_number < 100; sequence_number++) {
+        memset(packet, 0, sizeof(packet));
 
-    //rest of the buffer is for the payload
-    struct timeval* payload = (struct timeval*) (packet + sizeof(struct icmp));
+        // ICMP header is at the start of the buffer
+        struct icmp *icmp_hdr = (struct icmp *)packet;
 
-    icmp_hdr->icmp_type = 8;
-    icmp_hdr->icmp_code = 0;
-    icmp_hdr->icmp_id = getpid();
-    icmp_hdr->icmp_seq = sequence_number;
-    icmp_hdr->icmp_cksum = checksum((unsigned short *)icmp_hdr,
-                                        sizeof(struct icmp) + sizeof(struct timeval);
-                                    );
-    
-    // send packet
-    if (sendto(sock, packet, sizeof(struct icmp) + sizeof(struct timeval), 0,
-                                    (struct sockaddr*)&dest, sizeof(dest)
-))
-    gettimeofday(payload, NULL);
+        // Payload will carry the send timestamp
+        struct timeval *payload = (struct timeval *)(packet + sizeof(struct icmp));
+
+        // Fill ICMP header
+        icmp_hdr->icmp_type = ICMP_ECHO;   // 8
+        icmp_hdr->icmp_code = 0;
+        icmp_hdr->icmp_id   = getpid() & 0xFFFF;
+        icmp_hdr->icmp_seq  = sequence_number;
+
+        // Put the send time in the payload BEFORE computing checksum
+        gettimeofday(payload, NULL);
+
+        // Compute checksum over header + payload actually used
+        size_t icmp_len = sizeof(struct icmp) + sizeof(struct timeval);
+        icmp_hdr->icmp_cksum = 0;
+        icmp_hdr->icmp_cksum = calculate_checksum(icmp_hdr, (int)icmp_len);
+
+        // Send packet to resolved address
+        ssize_t sent = sendto(sock, packet, icmp_len, 0,
+                            (struct sockaddr *)&resolved_addr.addr, resolved_addr.addrlen);
+        if (sent < 0) {
+            perror("sendto");
+            close(sock);
+            return EXIT_FAILURE;
+        }
+
+        // Receive a reply
+        char recvbuf[1500];
+        struct sockaddr_storage src;
+        socklen_t srclen = sizeof(src);
+
+        ssize_t n = recvfrom(sock, recvbuf, sizeof(recvbuf), 0,
+                            (struct sockaddr *)&src, &srclen);
+        if (n < 0) {
+            perror("recvfrom");
+            close(sock);
+            return EXIT_FAILURE;
+        }
+
+        // Parse IP header to locate ICMP inside the received packet
+        struct ip *ip_hdr = (struct ip *)recvbuf;
+        int iphdr_len = ip_hdr->ip_hl << 2;  // ip_hl is in 32-bit words
+        if (iphdr_len < (int)sizeof(struct ip) || iphdr_len > (int)n) {
+            fprintf(stderr, "Malformed IP header\n");
+            close(sock);
+            return EXIT_FAILURE;
+        }
+
+        struct icmp *icmp_reply = (struct icmp *)(recvbuf + iphdr_len);
+
+        if (icmp_reply->icmp_type == ICMP_ECHOREPLY && icmp_reply->icmp_id == (getpid() & 0xFFFF)) {
+            struct timeval now;
+            gettimeofday(&now, NULL);
+
+            // The echoed payload should contain the original send timestamp
+            struct timeval *sent_time = (struct timeval *)((char *)icmp_reply + sizeof(struct icmp));
+            double rtt_ms = (now.tv_sec - sent_time->tv_sec) * 1000.0
+                        + (now.tv_usec - sent_time->tv_usec) / 1000.0;
+
+            char src_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &((struct sockaddr_in *)&src)->sin_addr, src_ip, sizeof(src_ip));
+            printf("Reply from %s: icmp_seq=%d time=%.3f ms\n", src_ip, icmp_reply->icmp_seq, rtt_ms);
+        } else {
+            printf("Received ICMP type=%d code=%d (not an echo reply for this PID)\n",
+                icmp_reply->icmp_type, icmp_reply->icmp_code);
+        }
+        sleep(1);
+    }
     close(sock);
     return 0;
 }
@@ -99,7 +153,7 @@ void resolve_hostname(const char *hostname, char *ip_address, SocketAddress *res
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; // Allow IPv4 or IPv6
-    hints.ai_socktype = SOCK_RAW;
+    hints.ai_socktype = 0;  // don't filter by socktype; we only need an address
 
     if ((status = getaddrinfo(hostname, NULL, &hints, &res)) != 0) {
         fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
