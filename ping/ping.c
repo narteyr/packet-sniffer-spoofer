@@ -22,9 +22,11 @@
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #define PACKET_SIZE 64
+#define ICMP_HDRLEN 8  // bytes: type(1) + code(1) + cksum(2) + id(2) + seq(2)
 
 // This struct is a great idea to keep socket info organized.
 typedef struct {
@@ -75,7 +77,7 @@ int main(int argc, char *argv[]) {
         struct icmp *icmp_hdr = (struct icmp *)packet;
 
         // Payload will carry the send timestamp
-        struct timeval *payload = (struct timeval *)(packet + sizeof(struct icmp));
+        struct timeval *payload = (struct timeval *)(packet + ICMP_HDRLEN);
 
         // Fill ICMP header
         icmp_hdr->icmp_type = ICMP_ECHO;   // 8
@@ -87,7 +89,7 @@ int main(int argc, char *argv[]) {
         gettimeofday(payload, NULL);
 
         // Compute checksum over header + payload actually used
-        size_t icmp_len = sizeof(struct icmp) + sizeof(struct timeval);
+        size_t icmp_len = ICMP_HDRLEN + sizeof(struct timeval);
         icmp_hdr->icmp_cksum = 0;
         icmp_hdr->icmp_cksum = calculate_checksum(icmp_hdr, (int)icmp_len);
 
@@ -100,46 +102,74 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
 
-        // Receive a reply
+        // Wait for the matching echo reply for this sequence (or timeout)
         char recvbuf[1500];
         struct sockaddr_storage src;
-        socklen_t srclen = sizeof(src);
+        socklen_t srclen;
+        int got_reply = 0;
 
-        ssize_t n = recvfrom(sock, recvbuf, sizeof(recvbuf), 0,
-                            (struct sockaddr *)&src, &srclen);
-        if (n < 0) {
-            perror("recvfrom");
-            close(sock);
-            return EXIT_FAILURE;
+        for (;;) {
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(sock, &rfds);
+            struct timeval tv; tv.tv_sec = 1; tv.tv_usec = 0;  // 1s per-echo timeout
+
+            int r = select(sock + 1, &rfds, NULL, NULL, &tv);
+            if (r < 0) {
+                perror("select");
+                close(sock);
+                return EXIT_FAILURE;
+            }
+            if (r == 0) {
+                // timed out waiting for this sequence
+                printf("Request timeout for icmp_seq=%d\n", sequence_number);
+                break;
+            }
+
+            srclen = sizeof(src);
+            ssize_t n = recvfrom(sock, recvbuf, sizeof(recvbuf), 0,
+                                 (struct sockaddr *)&src, &srclen);
+            if (n < 0) {
+                perror("recvfrom");
+                close(sock);
+                return EXIT_FAILURE;
+            }
+
+            // Parse IP header to locate ICMP inside the received packet
+            struct ip *ip_hdr = (struct ip *)recvbuf;
+            int iphdr_len = ip_hdr->ip_hl << 2;  // ip_hl is in 32-bit words
+            if (iphdr_len < (int)sizeof(struct ip) || iphdr_len > (int)n) {
+                // malformed; ignore and keep waiting
+                continue;
+            }
+
+            struct icmp *icmp_reply = (struct icmp *)(recvbuf + iphdr_len);
+
+            if (icmp_reply->icmp_type == ICMP_ECHOREPLY &&
+                icmp_reply->icmp_id == (getpid() & 0xFFFF)) {
+
+                // If it's for a different seq (late/early), ignore and keep waiting
+                if (icmp_reply->icmp_seq != sequence_number) {
+                    continue;
+                }
+
+                struct timeval now;
+                gettimeofday(&now, NULL);
+
+                // Echoed payload holds the original send timestamp
+                struct timeval *sent_time = (struct timeval *)((char *)icmp_reply + ICMP_HDRLEN);
+                double rtt_ms = (now.tv_sec - sent_time->tv_sec) * 1000.0
+                              + (now.tv_usec - sent_time->tv_usec) / 1000.0;
+
+                char src_ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &((struct sockaddr_in *)&src)->sin_addr, src_ip, sizeof(src_ip));
+                int reply_ttl = ip_hdr->ip_ttl;
+                printf("Reply from %s: icmp_seq=%d ttl=%d time=%.3f ms\n",
+                       src_ip, icmp_reply->icmp_seq, reply_ttl, rtt_ms);
+
+                got_reply = 1;
+                break;
+            }
         }
-
-        // Parse IP header to locate ICMP inside the received packet
-        struct ip *ip_hdr = (struct ip *)recvbuf;
-        int iphdr_len = ip_hdr->ip_hl << 2;  // ip_hl is in 32-bit words
-        if (iphdr_len < (int)sizeof(struct ip) || iphdr_len > (int)n) {
-            fprintf(stderr, "Malformed IP header\n");
-            close(sock);
-            return EXIT_FAILURE;
-        }
-
-        struct icmp *icmp_reply = (struct icmp *)(recvbuf + iphdr_len);
-
-        if (icmp_reply->icmp_type == ICMP_ECHOREPLY && icmp_reply->icmp_id == (getpid() & 0xFFFF)) {
-            struct timeval now;
-            gettimeofday(&now, NULL);
-
-            // The echoed payload should contain the original send timestamp
-            struct timeval *sent_time = (struct timeval *)((char *)icmp_reply + sizeof(struct icmp));
-            double rtt_ms = (now.tv_sec - sent_time->tv_sec) * 1000.0
-                        + (now.tv_usec - sent_time->tv_usec) / 1000.0;
-
-            char src_ip[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &((struct sockaddr_in *)&src)->sin_addr, src_ip, sizeof(src_ip));
-            printf("Reply from %s: icmp_seq=%d time=%.3f ms\n", src_ip, icmp_reply->icmp_seq, rtt_ms);
-        } else {
-            printf("Received ICMP type=%d code=%d (not an echo reply for this PID)\n",
-                icmp_reply->icmp_type, icmp_reply->icmp_code);
-        }
+        
         sleep(1);
     }
     close(sock);
