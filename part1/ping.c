@@ -4,7 +4,7 @@
 * request and recieving response from target address
 * The functionalities are designed for the ping
 * tool command
-* @author Richmond Kwalah Nartey Tettey, Dartmouth CS60 Fall 2025
+* @author Richmond Nartey, Jonah Bard, Dartmouth CS60 Fall 2025
 * date: 09.27.2025
 *
 * Usage: ./ping [<ipv4 address> | <domain name> ]
