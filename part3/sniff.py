@@ -1,6 +1,7 @@
 from scapy.all import *
 import sys
 
+#TODO: explicitly print return keys
 
 def process_packet(pkt):
   if pkt.haslayer(Raw):
